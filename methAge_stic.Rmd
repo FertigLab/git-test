@@ -1,0 +1,931 @@
+---
+title: "Methylation Age"
+author: "Leslie Cope"
+date: "2023-03-07"
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+#attach("Data/prelimDat.Rda")
+library(flextable)
+library(officer)
+library(vioplot)
+library(RColorBrewer)
+library(limma)
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+library(readxl)
+geti=function(x,i=1) return(x[i])
+knitr::opts_chunk$set(echo = TRUE)
+
+attach("~/PROJECTS/DATA/BTCmeth/Data/prelimDat.Rda")
+attach("~/PROJECTS/DATA/BTCmeth/Data/realFast.Rda")
+source("~/PROJECTS/DATA/shihLabEndo_1_23/Rcode/functions.r")
+figP="./Figures"
+tabP="./Tables"
+```
+
+
+
+### QC new data
+
+The next few tables and plots provide information about sample quality. The most common problem, by far, occurs when a sample yields little viable DNA. This issue is readily identified by examining the distribution of  *detection p-values* for all the probes, which are calculated by testing whether signal intensities are significantly higher than background levels measured on negative control probes. The same problem can also often be detected by examining the distribution of beta values with violin plots where samples with low DNA usually have a thicker *waist*, or in density plots where there may be a third mode, near beta=0.50. 
+
+The table below shows the proportion of probes in each sample with detection p-values above 0.01. We usually evaluate these values in a relative rather than absolute way, rejecting clear outliers, but , with 33% of probes having large detection p-values, would be problematic by any standard. This sample is shown in red on the following plots. The next worst sample is shown in yellow. 
+
+
+Based on these, we removed the red sample and retained the rest.
+
+The final QC plot describes the efficiency of bisulfite conversion. In the perfect world, *C* levels on the y-axis and *T* levels on x, would be identical, while unconverted DNA results in excess *C*. In real life, conversion is never quite complete, so the dots are always above the diagonal, but these samples look fine. 
+
+
+```{r writeData, echo=F,message=F, warning=F,eval=F}
+allAnn=annotateMeth(rownames(betaJ))
+annBeta=cbind("CpG"=allAnn[,1],betaJ,sticBetaJ,allAnn[,-1])
+write.csv(annBeta,quote=F,file=file.path(path,"Tables/Data/allBetaValues.csv"))
+```
+
+
+```{r QCpval,echo=F,warning=F}
+pvalTab=data.frame("sample"=names(pvalScores),"prob p>0.01"=round(pvalScores,5))
+ft.pval=flextable(pvalTab[order(pvalScores),])
+ft.pval
+save_as_docx("Detecton P-values"=ft.pval,path="Tables/QC/detectionPval_table.docx")
+```
+
+```{r QCbox,echo=F,eval=F}
+
+set.seed(23432)
+oldMar=par()$mar
+par(mar=oldMar+c(0,0,0,-2))
+vioplot(betaJA[sample(1:nrow(betaJA),50000,replace=F),],col=pvalCols,las=2)
+abline(h=0.5)
+par(mar=oldMar)
+
+
+
+
+pdf(file.path(path,"Figures/QC/QC_violin_plot.pdf"))
+set.seed(23432)
+oldMar=par()$mar
+par(mar=oldMar+c(0,0,0,-2))
+vioplot(betaJA[sample(1:nrow(betaJA),50000,replace=F),],col=pvalCols,las=2)
+abline(h=0.5)
+par(mar=oldMar)
+do=dev.off()
+```
+  
+```{r QCdens,echo=F}
+plot(density(betaJA[,order(pvalScores)[1]]),type="l",lwd=3,col=pvalCols[order(pvalScores)[1]],xlab="",main="",ylim=c(0,3))
+for(i in 2:ncol(betaJA)) lines(density(betaJA[,order(pvalScores)[i]]),lwd=3,col=pvalCols[order(pvalScores)[i]])
+
+
+pdf("Figures/QC/QC_density_plot.pdf")
+plot(density(betaJA[,order(pvalScores)[1]]),type="l",lwd=3,col=pvalCols[order(pvalScores)[1]],xlab="",main="",yli=c(0,3))
+for(i in 2:ncol(betaJA)) lines(density(betaJA[,order(pvalScores)[i]]),lwd=3,col=pvalCols[order(pvalScores)[i]])
+do=dev.off()
+```
+
+```{r QCbis,echo=F}
+plot(Tmn,Cmn, pch=16,main="Bisulfite Conversion",xlab="T", ylab="C")
+abline(0,1.0)
+
+pdf("Figures/QC/QC_bisulfite_plot.pdf")
+plot(Tmn,Cmn, pch=16,main="Bisulfite Conversion",xlab="T", ylab="C")
+abline(0,1.0)
+do=dev.off()
+
+```
+
+```{r removeBadSample, echo=T}
+names(pvalScores)=names(pvalCols)=colnames(betaJA)
+removedSamp=colnames(betaJA)[which(pvalScores>0.1)]
+beta=beta[,-which(colnames(beta)==removedSamp)]
+pvalScores=pvalScores[-which(pvalScores>0.1)]
+pvalCols=pvalScores[-which(pvalCols>0.1)]
+
+
+juneClinF=juneClinF[colnames(beta),]
+
+dim(juneClinF)
+dim(beta)
+### if need to restore after manual
+# betaJA=get("betaJA",pos="file:../Data/prelimDat.Rda")
+# betaJ=get("betaJ",pos="file:../Data/prelimDat.Rda")
+# pvalScores=get("pvalScores",pos="file:../Data/prelimDat.Rda")
+#[colJune[oldNames]]
+
+# pvalCols=get("pvalCols",pos="file:../Data/prelimDat.Rda")
+#[colJune[oldNames]]
+```
+
+### Charactering our samples
+Our dataset includes a total of 108 samples from 55 patients. For 29 , apparently disease-free patients we have a single NFTE sample. The remaining 26 patients each have at least one STIC, and one adjacnet NFTE sanples. Several of the patients have multiple STIC, and/or multiple NFTE. Samples from concurrent HGSC are available for 9 patients, and a single P53 sample is available as well. Two additional patients are noted to have concurrent HGSC, although we do not have a sample, and one patient (FTE-306) has a question mark in the *Concurrent.HGSC* column of the clinical data. 
+
+```{r demographics, echo=F}
+samp=sapply(strsplit(rownames(juneClinF),split=" ",fixed=T),geti,i=1)
+nSamps=nrow(juneClinF)
+nPat=length(unique(samp))
+allLes=sapply(sapply(split(juneClinF$Type.of.lesion,samp),unique),paste,collapse="-")
+
+healthySamp=names(allLes)[which(allLes=="NFTE")]
+health=names(samp)[which(samp%in%healthySamp)]
+
+# check that all samples with hgsc are describe appropriately
+hgscSamps=unique(samp[which(juneClinF$Type.of.lesion=="HGSC")])
+#juneClinF$Concurrent.HGSC[which(samp%in%hgscSamps)]
+
+#check that all patients with disease have at least on stic sample
+# table(allLes[grep("STIC",allLes,invert=T)])
+
+
+## age
+
+```
+
+#### Unsupervised clustering
+Clustering all samples distinguishes normals from everything else. 
+```{r unsup, echo=F}
+sampCols=c("blue","orange","red","yellow","orange")
+names(sampCols)=c("NFTE","STIC","HGSC","p53","dSTIC")
+sds=apply(beta,1, sd,na.rm=T)
+
+csc=sampCols[juneClinF[colnames(beta),"Type.of.lesion"]]
+islandCols=c("red","orange","orange","yellow","white","yellow")
+names(islandCols)=unique(Islands.UCSC[rownames(beta)[which(sds>.25)],2])
+islandStatus=Islands.UCSC[rownames(beta)[which(sds>.25)],2]
+rsc=islandCols[islandStatus]
+heatmap(beta[which(sds>.25),],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors = csc)
+
+
+pdf("Figures/unsup_heat.pdf")
+heatmap(beta[which(sds>.25),],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors = csc)
+
+
+do=dev.off()
+
+```
+
+Clustering just STIC
+
+```{r unsupStic, echo=F}
+
+sticSD=apply(beta[,which(juneClinF[,"Type.of.lesion"]=="STIC")],1,sd,na.rm=T)
+
+
+
+heatmap(beta[which(sticSD>0.30),],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors = csc)
+
+
+pdf("Figures/unsup_heat_sticMark_allSamps.pdf")
+heatmap(beta[which(sticSD>.30),],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors = csc)
+
+
+do=dev.off()
+
+
+pdf("Figures/unsup_heat_sticMark_sticSamps.pdf")
+heatmap(beta[which(sticSD>.30),grep("STIC",juneClinF$Type.of.lesion)],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors = csc[grep("STIC",juneClinF$Type.of.lesion)])
+
+
+do=dev.off()
+
+
+pdf("Figures/unsup_heat_sticMark_sticSamps_corDist.pdf")
+require(bioDist)
+heatmap(beta[which(sticSD>.30),grep("STIC",juneClinF$Type.of.lesion)],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors = csc[grep("STIC",juneClinF$Type.of.lesion)],distfun=spearman.dist)
+
+
+do=dev.off()
+```
+#### What is systematically different between STIC and nonSTIC
+
+```{r sticVnorm, echo=F}
+islandCols=c("red","orange","white","yellow","orange","yellow")
+names(islandCols)=unique(Islands.UCSC[,2])
+
+
+
+
+norms=rownames(juneClinF)[which(juneClinF[,"Type.of.lesion"]=="NFTE")]
+stic=rownames(juneClinF)[grep("STIC",juneClinF[,"Type.of.lesion"])]
+dstic=rownames(juneClinF)[which(juneClinF[,"Type.of.lesion"]=="dSTIC")]
+hgsc=rownames(juneClinF)[which(juneClinF[,"Type.of.lesion"]=="HGSC")]
+p53=rownames(juneClinF)[which(juneClinF[,"Type.of.lesion"]=="p53")]
+desNS=cbind(rep(1,length(stic)+length(norms)),rep(1:0,c(length(stic),length(norms))))
+ftNS=lmFit(beta[,c(stic,norms)],desNS)
+ebNS=eBayes(ftNS)
+ttNS=topTable(ebNS,coef=2,num=nrow(betaJA))
+
+tabNS=diffMethTab(ttNS)
+write.csv(tabNS,quote=F,file="Tables/Data/sticVnfte.csv")
+ftSN=flextable(tabNS[1:10,c(1,9,10,2:6)])
+ftSN
+save_as_docx(ftSN,path="Tables/differentialMethSticNfte.docx")
+heatNS=heatmap(beta[rownames(ttNS)[1:500],],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors = csc,keep.dendro=T)
+
+heatNS=heatmap(beta[rownames(ttNS)[100000:100500],],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors = csc,keep.dendro=T)
+pdf("Figures/sticVnfte_heat.pdf")
+
+heatNS=heatmap(beta[rownames(ttNS)[1:500],],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors = csc,keep.dendro=T)
+do=dev.off()
+
+
+```
+
+
+
+#### Outliers
+```{r outliers, echo=F}
+library(OutlierMeth)
+betaB=flagMeth(beta)
+betaB01=flagMeth(beta, p=0.00001)
+sumisna=function(x) return(sum(is.na(x)))
+betaB=betaB[apply(betaB,1,sumisna)==0,]
+sumBup=apply(betaB==1,2,sum)
+sumBdn=apply(betaB==(-1),2,sum)
+sumBall=sumBup+sumBdn
+
+
+betaB01=betaB01[apply(betaB01,1,sumisna)==0,]
+sumBup01=apply(betaB01==1,2,sum)
+sumBdn01=apply(betaB01==(-1),2,sum)
+sumBall01=sumBup01+sumBdn01
+
+
+```
+
+
+
+### DNA Methylation Age
+It has long been observed that a wide array of tissues acquire gradual, but characteristic changes in DNA methylation over time, making it possible to estimate chronological age in healthy tissue, based on DNA methylation patterns alone. Several age signatures have been developed and they are applied in a variety of settings, with the between chronological and epigenetic age used as a general indicator of deviation from normality, or explored as a marker of phenotype. 
+
+In the following, we applied several commonly-used clocks to our normal NFTE samples.  Based on these results, we present the Hannum clock for the plots that follow. 
+```{r methAge,echo=F,message=F,warning=F}
+library(methylclock)
+
+#### clinical data lists age one for each patient, regardless of number of samples. 
+### fill in the blanks
+
+samp=sapply(strsplit(rownames(juneClinF),split=" ",fixed=T),geti,i=1)
+smp=cbind(samp,juneClinF$Age)
+smp1=smp[which(smp[,2]!=""),]
+rownames(smp1)=smp1[,1]
+ageF=rep(NA,108)
+
+for(i in 1:nrow(smp1)){
+ageF[which(samp==smp1[i,1])]=smp1[i,2]
+}
+ageF=as.numeric(ageF)
+names(ageF)=rownames(juneClinF) 
+
+
+#organize sample type
+#newNames=c("NFT","HGSC","dSTIC","P53","STIC")
+#names(newNames)=unique(sticClin[,53])[c(2,3,5,4,1)]
+
+
+### calculate epigenetic age
+ages=as.data.frame(DNAmAge(beta,age=ageF,cell.count = F))
+
+###and gather results
+
+
+rownames(ages)=colnames(beta)
+age=as.matrix(ages)
+ageA=matrix(as.numeric(age[,c(2,5,8)]),ncol=3)
+colnames(ageA)=c("Horvath","Hannum","Levine")
+ageC=matrix(as.numeric(age[,c(3,6,9)]),ncol=3)
+colnames(ageC)=c("Horvath","Hannum","Levine")
+rownames(ageA)=rownames(ageC)=names(ageF)
+absum=function(x) return(sum(abs(x)))
+ageSumTab=apply(ageC[which(juneClinF[rownames(ageC),"Type.of.lesion"]=="NFTE"),],2,summary)
+ftAgeSum=flextable(data.frame("quantile"=rownames(ageSumTab),ageSumTab))
+ftAgeSum
+save_as_docx("clockComparison"=ftAgeSum,path="Tables/clockComparison.docx")
+#### now plots
+#plot(ageA[,1],ageA[,2],xlab="Horvath",ylab="Hannum",pch=16)
+#abline(0,1)
+#plot(ageA[,1],ageA[,3],xlab="Horvath",ylab="Levine",pch=16)
+#abline(0,1)
+#plot(ageA[,3],ageA[,2],xlab="Levine",ylab="Hannum",pch=16)
+#abline(0,1)
+```
+
+
+
+
+```{r boxplotGp,echo=F,message=F,warning=F}
+#om=par()$mar
+#par(mar=om+c(7,0,0,0))
+pdf("./Figures/epigeneticAge.pdf")
+boxplot(ageC[,"Hannum"]~juneClinF[rownames(ageC),"Type.of.lesion"],las=2,xlab="",ylab="Epi Age - Chron Age")
+stripchart(ageC[,"Hannum"]~juneClinF[rownames(ageC),"Type.of.lesion"],method="jitter",add=T,vertical=T,pch=16)
+abline(h=-30,lty=3)
+do=dev.off()
+#par(mar=om)
+
+
+boxplot(ageC[,"Hannum"]~juneClinF[rownames(ageC),"Type.of.lesion"],las=2,xlab="",ylab="Epi Age - Chron Age")
+
+stripchart(ageC[,"Hannum"]~juneClinF[rownames(ageC),"Type.of.lesion"],method="jitter",add=T,vertical=T,pch=16)
+abline(h=-30)
+
+```
+
+#### STIC epigenetic age groups
+
+Hannum epigenetic age of many STIC lesions is significantly younger than chronological age, but the epigenetic age is very close to chronology for others and HGSC samples show a similar distribution of epigenetic ages. The following heatmap shows the DNA methylation patterns associated with the two STIC age groups.  Blue indicates NFTE while yellow, orange, and red indicate increasing levels of malignancy in P53, STIC/dStic, and HGSC respectively. The young STIC are shown in darker orange, while the older are shown in gold. 
+
+
+
+```{r sticAgeGroups, echo=FALSE,message=F,warning=F}
+sticY=rownames(ageC)[which(ageC[,"Hannum"]<(-30) & juneClinF[rownames(ageC),"Type.of.lesion"]=="STIC")]
+sticO=rownames(ageC)[which(ageC[,"Hannum"]>(-30) & juneClinF[rownames(ageC),"Type.of.lesion"]=="STIC")]
+
+
+library(limma)
+des=cbind(rep(1,length(sticO)+length(sticY)),rep(0:1,c(length(sticO),length(sticY))))
+ftYO=lmFit(beta[which(sticSD>0.1),c(sticO,sticY)],des)
+ebYO=eBayes(ftYO)
+ttYO=topTable(ebYO,coef=2,num=sum(sticSD>0.1))
+
+library(RColorBrewer)
+
+cscYO = sampCols[juneClinF[colnames(beta),"Type.of.lesion"]]
+      names(cscYO)=colnames(beta)
+      cscYO[sticO]="gold"
+heatYO=heatmap(beta[rownames(ttYO)[1:500],],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors = cscYO,keep.dendro=T)
+
+pdf("Figures/youngSticVoldStic.pdf")
+heatYO=heatmap(beta[rownames(ttYO)[1:500],],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors = cscYO,keep.dendro=T)
+do=dev.off()
+
+
+#### are O always closer to NFTE than Y?
+YOsites=rownames(ttYO)[which(ttYO$B>0)]
+
+
+medY=apply(beta[YOsites,sticY],1,median,na.rm=T)
+medO=apply(beta[YOsites,sticO],1,median,na.rm=T)
+medN=apply(beta[YOsites,which(juneClinF[colnames(beta),"Type.of.lesion"]=="NFTE")],1,median,na.rm=T)
+
+
+
+```
+
+
+```{r unsupSticAgeann, echo=F}
+
+pdf("Figures/unsup_heat_sticMark_sticSamps_yoAnn.pdf")
+heatmap(beta[which(sticSD>.30),c(sticY,sticO)],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors = cscYO[c(sticY,sticO)])
+
+
+do=dev.off()
+```
+What is the difference between old and young STIC?
+
+First we will take a look at the actual probes in teh clock
+
+```{r hannumPbs, echo=F}
+hannumPbs=intersect(get_coefHannum()[,1],rownames(beta))
+heatmap(beta[hannumPbs,c(sticY,sticO)],col=brewer.pal(9,"Blues"),cexCol=.5,ColSideColors = cscYO[c(sticY,sticO)],keep.dendro=T)
+
+pdf("Figures/hannumPbs.pdf")
+heatmap(beta[hannumPbs,c(sticY,sticO)],col=brewer.pal(9,"Blues"),cexCol=.5,ColSideColors = cscYO[c(sticY,sticO)],keep.dendro=T)
+do=dev.off()
+
+pdf("Figures/hannumPbsNoscale.pdf")
+heatmap(beta[hannumPbs,c(sticY,sticO)],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors = cscYO[c(sticY,sticO)],keep.dendro=T)
+do=dev.off()
+```
+
+
+The heatmap above, suggests that old STIC generally look more normal-like than those that are epigenetically younger. This suggests they may be less advanced or more contaminated with normal cells. If so, then old STIC should be broadly and robustly more normal-like than young STIC. In this analysis, we did the following:
+
+  * choose CpG sites which show relatively little variation in NFTE samples (sd < 0.05) and relatively high variation in STIC samples (sd > 0.15)
+  
+ * z-transform each cpg site across all samples
+ * find the average NFTE profile
+ * calculate the Euclidean distance between the NFTE template and each methylation profile. 
+ 
+Young STIC are distinctly further from normal, although there is overlap. 
+```{r normAgePred, echo=F}
+
+sdNorm=apply(beta[,norms],1,sd,na.rm=T)
+
+scaleB=t(apply(beta[which(sticSD>0.15 & sdNorm< 0.05),],1,scale))
+colnames(scaleB)=colnames(beta)
+
+
+normTemp=apply(scaleB[,norms],1,mean)
+normCors=apply(scaleB,2,cor,y=normTemp,method="spearman",use="pair")
+dst=function(x,y) return(sqrt(sum((x-y)^2)))
+normD=apply(scaleB,2,dst,y=normTemp)
+normCors2=apply(beta[rownames(scaleB),],2,cor,y=normTemp,method="spearman",use="pair")
+resD=list("NFTE"=normD[norms],"STIC_Y"=normD[sticY],"STIC_O"=normD[sticO],"HGSC"=normD[hgsc])
+resCor=list("NFTE"=normCors[norms],"STIC_Y"=normCors[sticY],"STIC_O"=normCors[sticO],"HGSC"=normCors[hgsc])
+boxplot(resD,outline=F,range=0,ylab="distance to normal template")
+stripchart(resD,add=T,vertical=T,method="jitter",pch=16)
+
+pdf("Figures/distFromNormal.pdf")
+boxplot(resD,outline=F,range=0,ylab="distance to normal template")
+stripchart(resD,add=T,vertical=T,method="jitter",pch=16)
+
+do=dev.off()
+```
+
+
+```{r , eval=F, echo=F}
+ageCorO.NY=apply(beta[rownames(ttO.NY)[1:500],norms],1,cor,y=ageC[norms,"Hannum"],use="pair")
+ageCorYO=apply(beta[rownames(ttYO)[1:500],norms],1,cor,y=ageC[norms,"Hannum"],use="pair")
+
+ageCorRand=apply(beta[rownames(ttYO)[1:500],norms],1,cor,y=ageC[sample(norms),"Hannum"],use="pair")
+
+## characterize young and old on probes over which they differ
+yoPbs=rownames(ttYO)[1:1000]
+onyPbs=rownames(ttO.NY)[1:1000]
+tempO=apply(beta[yoPbs,sticO],1,mean,na.rm=T)
+tempY=apply(beta[yoPbs,sticY],1,mean,na.rm=T)
+
+### how do normals look on those
+corO=apply(beta[yoPbs,norms],2,cor,y=tempO)
+corY=apply(beta[yoPbs,norms],2,cor,y=tempY)
+
+### is normal epigenetic age associated with these markers?  YES!!
+
+plot(corY,ageC[norms,"Hannum"])
+
+
+#### are old less variable? YES!!! 
+sdO=apply(beta[yoPbs,sticO],1,sd,na.rm=T)
+sdY=apply(beta[yoPbs,sticY],1,sd,na.rm=T)
+```
+
+On the other hand, if old STIC are a distinct subtype, I would expect sites where they differ from both young STIC and normal samples. As seen in the following heatmap, such sites do exist, although in general it looks like the young stic are intermediate to old stic and normals over these probes, rather than clearly normal like. 
+
+
+```{r oldNorm, echo=F}
+
+desO.NY=cbind(rep(1,length(sticO)+length(sticY)+length(norms)),rep(0:1,c(length(sticO),length(sticY)+length(norms))))
+ftO.NY=lmFit(beta[which(sticSD>0.1),c(sticO,sticY,norms)],desO.NY)
+ebO.NY=eBayes(ftO.NY)
+ttO.NY=topTable(ebO.NY,coef=2,num=sum(sticSD>0.1))
+
+
+heatO.NY=heatmap(beta[rownames(ttO.NY)[1:500],c(sticO,sticY,norms,p53,dstic,hgsc)],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors = cscYO[c(sticO,sticY,norms,p53,dstic,hgsc)],keep.dendro=T)
+
+
+pdf("Figures/oldSticSubtype.pdf")
+heatO.NY=heatmap(beta[rownames(ttO.NY)[1:500],c(sticO,sticY,norms,p53,dstic,hgsc)],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors = cscYO[c(sticO,sticY,norms,p53,dstic,hgsc)],keep.dendro=T,Colv=NA)
+
+do=dev.off()
+
+
+```
+
+#### Does age vary by patient?
+Only one patient, FTE-344,  has an old and a young stic. 
+Otherwise, it is true that old stic come from old NFTE, and young stic come from young NFTE. The heatmaps in the following section show young and old nfte samples, on the probes that distinguish young and old stic samples. Looks like there is a little bit of structure in each, but not much. 
+
+
+
+```{r echo=F}
+
+names(samp)=rownames(juneClinF)
+#intersect(unique(samp[sticO]),unique(samp[sticY]))
+
+sampY=setdiff(samp[sticY],"FTE-344")
+sampO=setdiff(samp[sticO],"FTE-344")
+nfteO=intersect(norms,rownames(juneClinF)[which(samp%in%sampO)])
+nfteY=intersect(norms,rownames(juneClinF)[which(samp%in%sampY)])
+
+
+boxplot(list("NFTE_Y"=ageC[nfteY,"Hannum"],"NFTE_O"=ageC[nfteO,"Hannum"],"Healthy"=ageC[health,"Hannum"]),range=0,outline=F,xlab="age difference")
+stripchart(list("NFTE_Y"=ageC[nfteY,"Hannum"],"NFTE_O"=ageC[nfteO,"Hannum"],"Healthy"=ageC[health,"Hannum"]),vertical=T,add=T,method="jitter",pch=16)
+### which stic have nfte?
+types=split(juneClinF$Type.of.lesion,samp)
+typesV=sapply(types,paste,collapse=",")
+
+pdf("Figures/NFTEage.pdf")
+
+boxplot(list("NFTE_Y"=ageC[nfteY,"Hannum"],"NFTE_O"=ageC[nfteO,"Hannum"],"Healthy"=ageC[health,"Hannum"]),range=0,outline=F,ylab="age difference")
+stripchart(list("NFTE_Y"=ageC[nfteY,"Hannum"],"NFTE_O"=ageC[nfteO,"Hannum"],"Healthy"=ageC[health,"Hannum"]),vertical=T,add=T,method="jitter",pch=16)
+### which stic have nfte?
+do=dev.off()
+
+#plot(spMap[samp],ageC[,"Hannum"],pch=16, cex=.5, col=cscYO,ylab="age difference",xlab="")
+
+### do YO and O.NY cpg sites distinguish these? 
+heatmap(beta[rownames(ttYO)[1:500],c(nfteO,nfteY)],col=brewer.pal(9,"Blues"),Colv=NA,Rowv=heatYO$Rowv,ColSideColors=rep(c("gold","orange"),c(length(nfteO),length(nfteY))))
+
+
+heatmap(beta[rownames(ttO.NY)[1:500],c(nfteO,nfteY)],col=brewer.pal(9,"Blues"),Colv=NA,Rowv=heatO.NY$Rowv,ColSideColors=rep(c("gold","orange"),c(length(nfteO),length(nfteY))))
+
+
+```
+
+
+
+```{r genesetYO, echo=F,cache=T,eval=F}
+
+#To better understand what was happening here, we performed gene set analysis on the CpG sites differentially methylated between young and old STIC. These results indicate which pathways are affected, but more nuanced interpretation is difficult, since we see dna methylation changes in both directions, in the same genes, and functional consequences depend highly on location. 
+library(gsaTest)
+require("IlluminaHumanMethylationEPICanno.ilm10b4.hg19")
+stat=data.frame(ttYO[,"t"])
+rownames(stat)=rownames(ttYO)
+geneName=Other[rownames(ttYO),"UCSC_RefGene_Name"]
+geti=function(x,i) return(x[i])
+
+removeDups=function(x){
+  dups=duplicated(x)
+  return(x[!dups])
+}
+
+removeGeneDups=function(gene){
+  return(sapply(lapply(strsplit(gene,split=";",fixed=T),removeDups),paste,collapse=";"))
+}
+gns=removeGeneDups(geneName)
+names(gns)=rownames(ttYO)
+#gseC8D=GSEtab(broadGSE.test(uniqGene(stat,genes=gns),alternative="down",cat="C8"))
+#gseC8U=GSEtab(broadGSE.test(uniqGene(stat,genes=gns),alternative="up",cat="C8"))
+#gseC5U=GSEtab(broadGSE.test(uniqGene(stat,genes=gns),alternative="up",cat="C5"))
+#gseC5D=GSEtab(broadGSE.test(uniqGene(stat,genes=gns),alternative="down",cat="C5"))
+gseC8=GSEtab(broadGSE.test(uniqGene(stat,genes=gns),cat="C8"))
+gseC5=GSEtab(broadGSE.test(uniqGene(stat,genes=gns),cat="C5"))
+gseH=GSEtab(broadGSE.test(uniqGene(stat,genes=gns),cat="H"))
+ovaryft=flextable(gseC8[grep("OVARY",rownames(gseC8)),1:3])
+ovaryft
+```
+
+
+
+
+
+```{r nftAge,echo=F,eval=F}
+"One possibility is that the old stic are simply those with the most contamination from normal cells. Looking at the heatmap above, this is quite plausible, insofar as the old stic segregate with the normal samples on the right side of the heatmap. Its hard to tell though, we might just be capturing age in this plot. 
+ageCrsE=apply(cbind(betaJA,sticBetaJA)[rownames(ttYO)[1:1000],norms],1,cor,y=-ageC[norms,"Hannum"],method="spearman",use="pair")
+ageCrsC=apply(cbind(betaJA,sticBetaJA)[rownames(ttYO)[1:1000],norms],1,cor,y=ageF[norms],method="spearman",use="pair")
+
+```
+The heatmap below shows what is explicitly different between NFT and old STIC, demonstrating that there are robust differences between them. 
+
+
+
+```{r leuk, echo=F, warning=F,message=F,eval=F}
+library(sesame)
+leukJune=estimateLeukocyte(betaJ)
+leukStic=estimateLeukocyte(sticBetaJ)
+plot(ageC[names(c(leukJune,leukStic)),"Hannum"],c(leukJune,leukStic),pch=16)
+boxplot(c(leukJune,leukStic~juneClinF[c(colnames(betaJA),colnames(sticBetaJA)),"Type.of.lesion"],las=2,xlab="",ylab="Epi Age - Chron Age")
+stripchart(ageC[,"Hannum"]~juneClinF[rownames(ageC),"Type.of.lesion"],method="jitter",add=T,vertical=T,pch=16)
+
+boxplot(cbind())
+```
+
+
+
+```{r normDiff, echo=FALSE,message=F,warning=F,eval=F}
+
+
+
+
+### 
+norms=c(colnames(betaJA),colnames(sticBetaJA))[which(juneClinF[c(colnames(betaJA),colnames(sticBetaJA)),"Type.of.lesion"]=="NFTE")]
+
+desNO=cbind(rep(1,length(sticO)+length(norms)),rep(1:0,c(length(sticO),length(norms))))
+ftNO=lmFit(cbind(sticBetaJA,betaJA)[which(sticSD>0.1),c(sticO,norms)],desNO)
+ebNO=eBayes(ftNO)
+ttNO=topTable(ebNO,coef=2,num=sum(sticSD>0.1))
+
+
+
+heatNO=heatmap(cbind(betaJA,sticBetaJA)[rownames(ttNO)[1:500],],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors = cscYO,keep.dendro=T)
+
+
+
+```
+
+
+
+```{r dist2normO, echo=F,eval=F}
+"To take another look at this question, we calculated the pairwise *distance* between every STIC and every NFT, showing these values for young and old STIC respectively in the following boxplot.  Old STIC are indeed more normal-like overall, but results are not yet conclusive. 
+
+fullDistMat=as.matrix(dist(t(cbind(betaJA,sticBetaJA)[which(sticSD>quantile(sticSD,0.998,na.rm=T)),])))
+
+
+dstY=fullDistMat[norms,sticY]
+dstO=fullDistMat[norms,sticO]
+boxplot(list("Young"=as.vector(dstY),"Old"=as.vector(dstO)),range=0,outline=F)
+stripchart(list("Young"=as.vector(dstY),"Old"=as.vector(dstO)),vertical=T,add=T,pch=16,cex=0.5,method="jitter")
+
+```
+
+
+```{r dist2norm, echo=F,eval=F}
+
+fullDistMat=as.matrix(dist(t(sticBeta[which(sdStic>quantile(sds,0.998,na.rm=T)),])))
+
+nftlocs=which(newNames[sticClin[,53]]=="NFT")
+dstY=fullDistMat[nftlocs,sticY]
+dstO=fullDistMat[nftlocs,sticO]
+boxplot(list("Young"=as.vector(dstY),"Old"=as.vector(dstO)),range=0,outline=F)
+stripchart(list("Young"=as.vector(dstY),"Old"=as.vector(dstO)),vertical=T,add=T,pch=16,cex=0.5,method="jitter")
+
+```
+
+
+```{r oldDatYO, echo=F,eval=F}
+gp=gp2
+gp[which(gp=="unclass")]="Unclass"
+gp[which(gp=="utEnd")]="EEC"
+gp[which(gp=="utSer")]="USC"
+gp[which(gp=="hgsc")]="HGSOC"
+
+subtypeCols=c("#3399FF","#99CCFF","#003366","#FF0000","#FFCC00","#FF6666","#993300")
+names(subtypeCols)=c("FM","EM","CM","HGSOC","USC","EEC","Unclass")
+sampColsO=subtypeCols[gp]
+
+heatmap(beta[intersect(rownames(beta),rownames(ttYO)[1:500]),],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors = sampColsO,Rowv=heatYO$Rowv)
+```
+
+
+
+
+```{r oldDatNO, echo=F,eval=F}
+
+
+heatmap(beta[intersect(rownames(beta),rownames(ttNO)[1:500]),],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors = sampColsO,Rowv=heatNO$Rowv)
+```
+### How do BRCA and WT samples differ?
+
+Epigenetic age is similar in both NFTE and in STIC
+
+```{r brca, echo=F,eval=T}
+patient=sapply(strsplit(sub("FTE-","",rownames(juneClinF)),split=" ",fixed=T),geti,i=1)
+mut=juneClinF[,"Germline"]
+names(mut)=rownames(juneClinF)
+for(sp in unique(samp)){
+  locs=which(samp==sp)
+  val=sort(unique(mut[locs]),decreasing=T)[1]
+  mut[locs]=val
+}
+for(sp in c("FTE-124","FTE-123")){
+  locs=which(samp==sp)
+   mut[locs]="WT"
+  
+}
+mut[31]="WT"
+wt=grep("WT",mut)
+brca1=grep("BRCA1",mut)
+brca2=grep("BRCA2",mut)
+brcaX=setdiff(1:length(mut),c(wt,brca1,brca2))
+w=names(mut)[wt]
+b1=names(mut)[brca1]
+b2=names(mut)[brca2]
+bx=names(mut)[brcaX]
+mutC=mut
+mutC[wt]="WT"
+mutC[brca1]="BRCA1"
+mutC[brca2]="BRCA2"
+mutC[brcaX]="BRCAX"
+mutS=mutC
+mutS[grep("BRCA",mutC)]="BRCA"
+
+
+boxplot(ageC[which(juneClinF[rownames(ageC),"Type.of.lesion"]=="NFTE"),"Hannum"]~mutC[which(juneClinF[rownames(ageC),"Type.of.lesion"]=="NFTE")],xlab="",ylab="Epi Age - Chron Age",outline=F,range=0,main="NFTE")
+stripchart(ageC[which(juneClinF[rownames(ageC),"Type.of.lesion"]=="NFTE"),"Hannum"]~mutC[which(juneClinF[rownames(ageC),"Type.of.lesion"]=="NFTE")],vertical=T,add=T,method="jitter",pch=16)
+
+boxplot(ageC[which(juneClinF[rownames(ageC),"Type.of.lesion"]=="STIC"),"Hannum"]~mutC[which(juneClinF[rownames(ageC),"Type.of.lesion"]=="STIC")],xlab="",ylab="Epi Age - Chron Age",outline=F,range=0, main="STIC")
+stripchart(ageC[which(juneClinF[rownames(ageC),"Type.of.lesion"]=="STIC"),"Hannum"]~mutC[which(juneClinF[rownames(ageC),"Type.of.lesion"]=="STIC")],vertical=T,add=T,method="jitter",pch=16)
+
+pdf("Figures/brcaNFTEage.pdf")
+boxplot(ageC[which(juneClinF[rownames(ageC),"Type.of.lesion"]=="NFTE"),"Hannum"]~mutC[which(juneClinF[rownames(ageC),"Type.of.lesion"]=="NFTE")],xlab="",ylab="Epi Age - Chron Age",outline=F,range=0,main="NFTE")
+stripchart(ageC[which(juneClinF[rownames(ageC),"Type.of.lesion"]=="NFTE"),"Hannum"]~mutC[which(juneClinF[rownames(ageC),"Type.of.lesion"]=="NFTE")],vertical=T,add=T,method="jitter",pch=16)
+
+do=dev.off()
+
+
+pdf("Figures/brcaSTICage.pdf")
+boxplot(ageC[which(juneClinF[rownames(ageC),"Type.of.lesion"]=="STIC"),"Hannum"]~mutC[which(juneClinF[rownames(ageC),"Type.of.lesion"]=="STIC")],xlab="",ylab="Epi Age - Chron Age",outline=F,range=0, main="STIC")
+stripchart(ageC[which(juneClinF[rownames(ageC),"Type.of.lesion"]=="STIC"),"Hannum"]~mutC[which(juneClinF[rownames(ageC),"Type.of.lesion"]=="STIC")],vertical=T,add=T,method="jitter",pch=16)
+do=dev.off()
+```
+
+Differences in methylation between WT STIC and those with BRCA are not significant, but do exhibit some capacity to separate samples
+```{r brcaWT, echo=F}
+
+### BRCAage
+
+ageSamp=sapply(split(ageF,samp),geti,i=1)
+brcaSamp=sapply(split(mutC,samp),geti,i=1)
+
+brcaAgeLst=split(ageSamp,brcaSamp)
+brcaAgeLst=c(brcaAgeLst,5)
+brcaAgeLst[[5]]=ageSamp[which(brcaSamp!="WT")]
+names(brcaAgeLst)[5]="all BRCA"
+
+pdf("Figures/brcaAgeMatch.pdf")
+boxplot(brcaAgeLst[c(1:3,5,4)],outline=F,range=0,lab="",ylab="Age")
+abline(h=median(ageSamp))
+stripchart(brcaAgeLst[c(1:3,5,4)],add=T,vertical=T,method="jitter",pch=16)
+do=dev.off()
+
+
+#what's different between brca1 and wt stic?
+sticB=which(juneClinF[,"Type.of.lesion"]=="STIC" & mutS=="BRCA")
+sticW=which(juneClinF[,"Type.of.lesion"]=="STIC" & mutS=="WT")
+mutPatient=tapply(mutC,samp,unique)
+desWT1=cbind(rep(1,length(sticB)+length(sticW)),rep(1:0,c(length(sticB),length(sticW))))
+
+ftWT1=lmFit(beta[which(sticSD>0.1),c(sticB,sticW)],desWT1)
+ebWT1=eBayes(ftWT1)
+ttWT1=topTable(ebWT1,coef=2,sum(sticSD>0.1))
+
+mutCols=c("purple","white")
+mutCCols=c("red","purple","lightblue","white")
+names(mutCols)=c("BRCA","WT")
+names(mutCCols)=c("BRCA1","BRCAX","BRCA2","WT")
+heatmap(beta[rownames(ttWT1)[1:136],],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors=mutCCols[mutC])
+#heatmap(beta[rownames(ttWT1)[1:100],],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors=cscYO)
+
+pdf("Figures/BRCA.pdf")
+heatmap(beta[rownames(ttWT1)[1:136],],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors=mutCCols[mutC])
+do=dev.off()
+
+pdf("Figures/BRCAstic.pdf")
+heatmap(beta[rownames(ttWT1)[1:136],grep("STIC",juneClinF$Type.of.lesion)],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors=mutCCols[mutC][grep("STIC",juneClinF$Type.of.lesion)])
+do=dev.off()
+#brcaIdat=targets2[(nrow(targets2)-7):nrow(targets2),1]
+#brca=rownames(juneClinF)[which(juneClinF[,"iDat.file.name"]%in%brcaIdat)]
+```
+
+### Incorporating annuploidy based classification
+In 2023, Yeh, Douville and others published the annuploidy-based REAL-FAST algorithm for classifying HGSC and its Fallopian precursors. 45 of 108 samples included in the final analysis here are among those previously classified using REAL-FAST, as shown in the following table. 
+
+```{r prepRealSeq,echo=F}
+### read in the new file
+realSeq=data.frame(read_excel("Data/20231109.Douville_STIC_age.xlsx"))[1:115,]
+realSeqName=paste0(realSeq[,"Name.on.Master.file"]," (",realSeq[,"Type.of.lesion"],")")
+realSeqName=sub(" (Should be FT-137 N1)","",realSeqName,fixed=T)
+rownames(realSeq)=realSeqName
+rSeq=realSeq[rownames(juneClinF),"Predicted.Classification.From.CCR.2023"]
+realFastLesionTab=data.frame("Class"=paste0("Path ",1:4),as.data.frame.matrix(table(rSeq,juneClinF$Type.of.lesion)))
+#realFastLesionTab=as.data.frame.matrix(table(rSeq,juneClinF$Type.of.lesion))
+ft.rSeq0=flextable(realFastLesionTab)
+ft.rSeq0
+save_as_docx(ft.rSeq0,path="Tables/realfast_vs_lesion_table.docx")
+```
+#### Using methylation array data to estimate copy number and infer REAL-FAST classes for samples that have not yet been classified. 
+
+DNA methylation arrays can be adapted to estimate copy number, as is done using SNP arrays. Probes measuring separate methylated and unmethylated signals can be combined to give an estimate of total DNA at each CpG site. These values are then normalized to a diploid standard, derived from normal samples, and finally smoothed over adjacent sites. 
+
+In this instance, we used 29 normal epithelium samples from disesase-free patients to represent diploid signal, and estimated copy number profiles for the remaining 79 samples, including STIC-concurrent HGSC and STIC-adjacent normal epithelium. The REAL-FAST classification uses a decistion tree based on DNA copy number in several genomic regions. The rules published for RealSeq data cannot be applied directly to copy number values estimated on methylation arrays so we derived new rules using the 45 samples where we had both.  The resulting methylation-based classification is highly concordant with the original REAL-FAST calls, although they do differe for samples, as shown in the table below. 
+
+```{r realFconfusion, echo=F}
+ls("file:~/PROJECTS/DATA/BTCmeth/Data/realFast.Rda")
+
+
+realFastConfTabTr=data.frame("Class"=paste0("Path ",1:4),as.data.frame.matrix(table(clsF[names(clsPredTr)],clsPredTr)))
+#realFastConfTabTr=as.data.frame.matrix(table(rSeq[names(clsPredTr)],clsPredTr))
+ft.rSeqTr=flextable(realFastConfTabTr)
+ft.rSeqTr
+save_as_docx(ft.rSeqTr,path="Tables/methfast_vs_realfast_table_confusion.docx")
+```
+ We used the methylation data to make REAL-FAST calls for the remaining 36 samples. The next table shows the relationship with lesion type
+
+```{r realFPrediction, echo=F}
+
+
+realFastLesionTabTs=data.frame("Class"=paste0("Path ",1:4),as.data.frame.matrix(table(clsPredTs,juneClinF[names(clsPredTs),"Type.of.lesion"])))
+ft.rSeqTs=flextable(realFastLesionTabTs)
+ft.rSeqTs
+save_as_docx(ft.rSeqTs,path="Tables/methfast_vs_lesion_table_test.docx")
+```
+
+
+
+### Subtypes of STIC
+
+
+```{r ageAndAnu, echo=F}
+boxplot(ageC[names(clsF),"Hannum"]~clsF,outline=F,range=0)
+stripchart(ageC[names(clsF),"Hannum"]~clsF, vertical =T,pch=16, add=T, method ="jitter")
+abline(h=-30)
+
+
+fisher.test(as.matrix(table(ageC[names(clsF),"Hannum"]<(-30),clsF))[,2:3])
+        
+        
+table(mutC[names(clsF)],clsF)
+
+stripchart(ageC[names(clsF),"Hannum"]~clsF, vertical =T,pch=16, add=T, method ="jitter")
+abline(h=-30)
+```
+
+#### Are there methylation marks of the anuploidy classes? 
+
+
+
+### lets start with path 2 vs path 3
+### HGSC, STIC, and dSTIC
+```{r methMarksAnu, echo=F}
+path23SampsA=names(clsF)[which(clsF%in%c("Path 2", "Path 3") & juneClinF[names(clsF),"Type.of.lesion"]%in%c("STIC","dSTIC","HGSC"))]
+
+desSsl=cbind(rep(1,length(path23SampsA)),as.numeric(clsF[path23SampsA]=="Path 2"))
+ftSsl=lmFit(beta[,path23SampsA],desSsl)
+ ebSsl=eBayes(ftSsl)
+ ttSsl=topTable(ebSsl,number=nrow(beta),coef=2)
+ 
+ 
+ rseqCols=rep("white",108)
+ names(rseqCols)=colnames(beta)
+ rseqCols[names(clsF)[which(clsF=="Path 1")]]="blue"
+rseqCols[names(clsF)[which(clsF=="Path 2")]]="red"
+rseqCols[names(clsF)[which(clsF=="Path 3")]]="orange"
+rseqCols[names(clsF)[which(clsF=="Path 4")]]="yellow"
+
+
+heatmap(beta[rownames(ttSsl)[1:500],path23SampsA],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors=rseqCols[path23SampsA])
+
+heatmap(beta[rownames(ttSsl)[1:500],],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors=rseqCols)
+
+
+
+pdf("Figures/anu_class_meth_mark_disease.pdf")
+heatmap(beta[rownames(ttSsl)[1:500],path23SampsA],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors=rseqCols[path23SampsA])
+do=dev.off()
+
+pdf("Figures/anu_class_meth_mark_allSamps.pdf")
+heatmap(beta[rownames(ttSsl)[1:500],],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors=rseqCols)
+do=dev.off()
+
+```
+
+#### Conversely, are there copynumger marks of methylation age?
+
+
+```{r cnvMarksMethAge, echo=F}
+yoSampsA=names(clsF)[which( juneClinF[names(clsF),"Type.of.lesion"]%in%c("STIC","dSTIC","HGSC"))]
+
+desSyo=cbind(rep(1,length(yoSampsA)),as.numeric(ageC[yoSampsA,"Hannum"]< (-30)))
+ftSyo=lmFit(tbtF[,yoSampsA],desSyo)
+ ebSyo=eBayes(ftSyo)
+ ttSyo=topTable(ebSyo,number=nrow(tbtF),coef=2)
+ 
+ ageColsV=c("gold","orange")
+ ageCols=ageColsV[as.numeric(ageC[names(clsF),"Hannum"]<(-30))+1]
+ names(ageCols)=names(clsF)
+
+ heatmap(tbtF[rownames(ttSyo)[1:500],yoSampsA],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors=ageCols[yoSampsA])
+ 
+ heatmap(tbtF[rownames(ttSyo)[1:500],],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors=ageCols)
+ 
+ pdf("Figures/methAge_class_cnv_mark_disease.pdf")
+heatmap(tbtF[rownames(ttSyo)[1:500],yoSampsA],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors=ageCols[yoSampsA])
+do=dev.off()
+
+pdf("Figures/methAge_class_cnv_mark_all.pdf")
+heatmap(tbtF[rownames(ttSyo)[1:500],],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors=ageCols)
+do=dev.off()
+
+
+#heatmap(tbtF[rownames(ttSyo)[1:500],],col=brewer.pal(9,"Blues"),scale="none",cexCol=.5,ColSideColors=rseqCols[colnames(tbtF)])
+
+
+```
+
+
+### Deconvolving bulk methylation signal into cell types
+
+```{r methylResolve, echo=F}
+
+cellRes=read.table("methylResolver.txt",sep="\t", header=T,row.names=1)
+
+library(pheatmap)
+pdf("cellTypeHeat.pdf")
+#include purity as well
+
+purity=round(1-cellRes[,27],1)
+ann=data.frame(condition=cond, purity)
+rownames(ann)=colnames(beta)
+
+purCol=brewer.pal(6,"Reds")
+names(purCol)=as.character(seq(from=0.1,to=0.6, by=0.1))
+colL=list(condition=condCols,purity=purCol)
+pheatmap(t(as.matrix(cellRes[1:16,16:26])),col=brewer.pal(9,"Blues"),scale="none",annotation_col=ann[1:16,],annotation_colors=colL,cluster_cols=F,border_color=NA,main="Bulk")
+pheatmap(t(as.matrix(cellRes[17:32,16:26])),col=brewer.pal(9,"Blues"),scale="none",annotation_col=ann[17:32,],annotation_colors=colL,cluster_cols=F,border_color=NA,main="Cellular")
+dev.off()
+
+
+
+
+heatmap(t(as.matrix(cellRes[1:16,16:26])),col=brewer.pal(9,"Blues"),scale="none",ColSideColors=condCols[cond[1:16]],cexCol=.6,main="Bulk Tissue")
+heatmap(t(as.matrix(cellRes[17:32,16:26])),col=brewer.pal(9,"Blues"),scale="none",ColSideColors=condCols[cond[1:16]],cexCol=.6,main="Cellular Tissue",)
+dev.off()
+
+
+
+```
+
